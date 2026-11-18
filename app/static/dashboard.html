@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pipeline Monitor</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: #f8fafc; color: #0f172a; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 24px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }
+  h1 { font-size: 22px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  .muted { color: #64748b; font-size: 13px; }
+  .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px; }
+  .tile, .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px; }
+  .tile .label { font-size: 12px; color: #64748b; }
+  .tile .value { font-size: 24px; font-weight: 600; margin-top: 4px; }
+  .card { margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+  th { color: #64748b; font-weight: 500; }
+  .pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
+  .success { background: #dcfce7; color: #166534; }
+  .failed { background: #fee2e2; color: #b91c1c; }
+  .running { background: #e0f2fe; color: #0369a1; }
+  .anomaly { background: #fef3c7; color: #92400e; }
+  .stale { background: #fee2e2; color: #b91c1c; }
+  .fresh { background: #f1f5f9; color: #475569; }
+  .cat { font-family: ui-monospace, monospace; font-size: 12px; }
+  ul.actions { margin: 4px 0 0; padding-left: 18px; color: #334155; }
+  .err { font-family: ui-monospace, monospace; font-size: 11px; color: #64748b; margin-top: 4px; }
+  .bar { display: inline-block; height: 8px; border-radius: 4px; background: #22c55e; vertical-align: middle; }
+  .bar-bg { display: inline-block; width: 80px; height: 8px; border-radius: 4px; background: #fee2e2; margin-right: 6px; vertical-align: middle; }
+  a { color: #0369a1; }
+  @media (max-width: 900px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Pipeline Monitor</h1>
+    <span class="muted">Last 24h · auto-refreshes every 30s · <a href="/docs">API</a> · <a href="/api/export/runs.csv">Export CSV</a></span>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card">
+    <h2>Pipeline health (7 days)</h2>
+    <table>
+      <thead><tr><th>Pipeline</th><th>Owner</th><th>Schedule</th><th>Last run</th><th>Success rate</th><th>Avg runtime</th><th>Freshness</th></tr></thead>
+      <tbody id="pipelines"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Recent failures &amp; anomalies (AI root cause analysis)</h2>
+    <table>
+      <thead><tr><th>When</th><th>Pipeline</th><th>Status</th><th>Category</th><th>Diagnosis &amp; recommended actions</th></tr></thead>
+      <tbody id="issues"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtTime = (iso) => iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+const fmtDur = (s) => s == null ? "—" : s < 120 ? `${Math.round(s)}s` : `${(s / 60).toFixed(1)}m`;
+const pct = (x) => x == null ? "—" : `${(x * 100).toFixed(1)}%`;
+
+async function load() {
+  const [summary, pipelines, failed, anomalies] = await Promise.all([
+    fetch("/api/metrics/summary").then((r) => r.json()),
+    fetch("/api/pipelines").then((r) => r.json()),
+    fetch("/api/runs?status=failed&limit=15").then((r) => r.json()),
+    fetch("/api/runs?anomalies_only=true&limit=15").then((r) => r.json()),
+  ]);
+
+  const tiles = [
+    ["Runs", summary.total_runs],
+    ["Success rate", pct(summary.success_rate)],
+    ["Failures", summary.failed_runs],
+    ["Anomalies", summary.anomalous_runs],
+    ["Stale pipelines", summary.stale_pipelines.length],
+  ];
+  document.getElementById("tiles").innerHTML = tiles
+    .map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
+
+  document.getElementById("pipelines").innerHTML = pipelines.map((p) => `
+    <tr>
+      <td><strong>${esc(p.name)}</strong></td>
+      <td>${esc(p.owner)}</td>
+      <td>${esc(p.schedule)}</td>
+      <td>${p.last_status ? `<span class="pill ${p.last_status}">${p.last_status}</span>` : ""} <span class="muted">${fmtTime(p.last_run_at)}</span></td>
+      <td><span class="bar-bg"><span class="bar" style="width:${(p.success_rate_7d ?? 0) * 80}px"></span></span>${pct(p.success_rate_7d)}</td>
+      <td>${fmtDur(p.avg_duration_7d)}</td>
+      <td><span class="pill ${p.is_stale ? "stale" : "fresh"}">${p.is_stale ? "stale" : "fresh"}</span></td>
+    </tr>`).join("");
+
+  const issues = [...failed, ...anomalies]
+    .sort((a, b) => b.started_at.localeCompare(a.started_at))
+    .slice(0, 15);
+  document.getElementById("issues").innerHTML = issues.map((r) => `
+    <tr>
+      <td class="muted">${fmtTime(r.started_at)}</td>
+      <td>${esc(r.pipeline)}</td>
+      <td><span class="pill ${r.status === "failed" ? "failed" : "anomaly"}">${r.status === "failed" ? "failed" : "anomaly"}</span></td>
+      <td class="cat">${esc(r.diagnosis?.category)}</td>
+      <td>
+        ${esc(r.diagnosis?.root_cause)}
+        ${r.anomaly_reasons.length ? `<div class="err">${r.anomaly_reasons.map(esc).join(" · ")}</div>` : ""}
+        ${r.error_message ? `<div class="err">${esc(r.error_message)}</div>` : ""}
+        <ul class="actions">${(r.diagnosis?.recommended_actions ?? []).map((a) => `<li>${esc(a)}</li>`).join("")}</ul>
+      </td>
+    </tr>`).join("") || `<tr><td colspan="5" class="muted">No issues 🎉</td></tr>`;
+}
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

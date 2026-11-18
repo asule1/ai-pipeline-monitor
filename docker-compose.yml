@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: monitor
+      POSTGRES_DB: monitor
+    ports:
+      - "5432:5432"   # exposed so Power BI Desktop can connect
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg2://monitor:monitor@db:5432/monitor
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      retries: 10
+
+  simulator:
+    build: .
+    command: ["python", "-m", "app.simulator", "--api", "http://api:8000", "--days", "7"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  pgdata:
